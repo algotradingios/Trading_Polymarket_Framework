@@ -301,42 +301,49 @@ class MarketDataProvider:
             raw=m,
         )
 
-    def list_candidate_markets(
+    def list_open_markets_universe(
         self,
-        pages: int = 3,
+        pages: int = 10,
         limit: int = 100,
-        only_open: bool = True,
         order: str = "volume24hr",
         ascending: bool = False,
-    ) -> List[MarketMeta]:
+        only_open: bool = True,
+        allow_restricted: bool = True,
+        require_tokens: bool = True,
+    ):
         """
-        Fetch open/tradable markets first. Gamma supports filters and ordering in query params.
-        """
+        Stable universe builder API used by run scripts.
 
-        params: Dict[str, Any] = {
+        NOTE: We do NOT rely on Gamma's query param `restricted=false` because we observed it being ignored
+        in the Spain/EU environment. We fetch open markets and apply restriction filtering locally.
+        """
+        # If you already have a method that does this (e.g., list_open_unrestricted_markets or similar),
+        # forward to it. Otherwise, implement inline.
+        params = {
             "active": True,
             "closed": False,
             "archived": False,
-            "restricted": False,
             "order": order,
             "ascending": ascending,
         }
 
-        out: List[MarketMeta] = []
+        out = []
+        seen = set()
+
         for raw in self.gamma.iter_markets(pages=pages, limit=limit, params=params):
             meta = self.parse_meta(raw)
 
-            if only_open:
-                if meta.closed or meta.archived or meta.restricted:
-                    continue
-                fpmm_live = raw.get("fpmmLive")
-                if fpmm_live is False:
-                    continue
+            if meta.market_id in seen:
+                continue
+            seen.add(meta.market_id)
 
-            if not meta.clob_token_ids:
+            if only_open and (meta.closed or meta.archived):
                 continue
 
-            if "enableOrderBook" in raw and raw["enableOrderBook"] is False:
+            if (not allow_restricted) and meta.restricted:
+                continue
+
+            if require_tokens and (not meta.clob_token_ids):
                 continue
 
             out.append(meta)
@@ -410,218 +417,4 @@ class MarketDataProvider:
             return meta.clob_token_ids[0], False, None
         return best  # type: ignore
 
-    def list_candidate_markets_from_events(
-        self,
-        pages: int = 5,
-        limit: int = 50,
-        order: str = "volume24hr",
-        ascending: bool = False,
-        only_open: bool = True,
-        require_orderbook: bool = False,   # dejamos False por ahora: validaremos con CLOB
-        market_id_rate_sleep: float = 0.03 # para no quemar Gamma al hacer /markets/{id}
-    ) -> List[MarketMeta]:
-
-        params: Dict[str, Any] = {
-            "active": True,
-            "closed": False,
-            "archived": False,
-            "order": order,
-            "ascending": ascending,
-        }
-
-        out: List[MarketMeta] = []
-        seen_ids = set()
-
-        # Debug counters
-        events_seen = 0
-        markets_seen = 0
-        markets_raw_types = Counter()
-        embedded_dict_markets = 0
-        id_list_markets = 0
-
-        # Cache for /markets/{id}
-        market_cache: Dict[str, Dict[str, Any]] = {}
-
-        reject_reasons = Counter()
-        examples = defaultdict(list)  # reason -> list of dict samples
-
-        for ev in self.gamma.iter_events(pages=pages, limit=limit, params=params):
-            events_seen += 1
-
-            mr = ev.get("markets", None)
-            markets_raw_types[type(mr).__name__] += 1
-
-            # Case 1: embedded markets (list of dicts)
-            embedded = []
-            if isinstance(mr, list) and mr and isinstance(mr[0], dict):
-                embedded = [x for x in mr if isinstance(x, dict)]
-                embedded_dict_markets += len(embedded)
-
-                for m in embedded:
-                    markets_seen += 1
-                    meta = self.parse_meta(m)
-
-                    # Reason 1: missing token ids
-                    if not meta.clob_token_ids:
-                        reject_reasons["NO_CLOB_TOKEN_IDS"] += 1
-                        if len(examples["NO_CLOB_TOKEN_IDS"]) < 3:
-                            examples["NO_CLOB_TOKEN_IDS"].append({
-                                "slug": m.get("slug"),
-                                "id": m.get("id"),
-                                "keys": list(m.keys())[:40],
-                                "clobTokenIds_raw": m.get("clobTokenIds"),
-                                "outcomes": m.get("outcomes"),
-                                "outcomePrices": m.get("outcomePrices"),
-                            })
-                        continue
-
-                    # Reason 2: closed/archived/restricted flags
-                    if only_open and meta.closed:
-                        reject_reasons["CLOSED_TRUE"] += 1
-                        continue
-                    if only_open and meta.archived:
-                        reject_reasons["ARCHIVED_TRUE"] += 1
-                        continue
-                    if only_open and meta.restricted:
-                        reject_reasons["RESTRICTED_TRUE"] += 1
-                        continue
-
-                    # Reason 3: explicit disable of orderbook if present
-                    if require_orderbook and m.get("enableOrderBook") is False:
-                        reject_reasons["ORDERBOOK_DISABLED"] += 1
-                        continue
-
-                    if meta.market_id in seen_ids:
-                        reject_reasons["DUPLICATE_ID"] += 1
-                        continue
-
-                    seen_ids.add(meta.market_id)
-                    out.append(meta)
-
-                continue  # done with this event
-
-            # Case 2: markets is list of ids (ints/strings) or JSON-encoded list
-            market_ids = _parse_market_ids_list(mr)
-            if market_ids:
-                id_list_markets += len(market_ids)
-
-            for mid in market_ids:
-                # Avoid duplicates
-                if mid in seen_ids:
-                    continue
-
-                # Fetch market detail (cached)
-                if mid not in market_cache:
-                    try:
-                        market_cache[mid] = self.gamma.get_market_by_id(mid)
-                    except Exception:
-                        continue
-                    time.sleep(market_id_rate_sleep)
-
-                m = market_cache[mid]
-                meta = self.parse_meta(m)
-
-                if only_open and (meta.closed or meta.archived or meta.restricted):
-                    continue
-
-                if require_orderbook and m.get("enableOrderBook") is False:
-                    continue
-
-                if not meta.clob_token_ids:
-                    continue
-
-                seen_ids.add(meta.market_id)
-                out.append(meta)
-
-        print(f"[DEBUG] Final counts: events_seen={events_seen} markets_seen={markets_seen} candidates={len(out)}")
-        print(f"[DEBUG] markets field raw types: {dict(markets_raw_types)}")
-        print(f"[DEBUG] embedded_dict_markets={embedded_dict_markets} id_list_markets={id_list_markets} cache_size={len(market_cache)}")
-
-        # Fallback: if still empty, pull /markets directly without relying on /events
-        if not out:
-            params2: Dict[str, Any] = {
-                "active": True,
-                "closed": False,
-                "archived": False,
-                "restricted": False,
-                "order": order,
-                "ascending": ascending,
-            }
-            for raw in self.gamma.iter_markets(pages=pages, limit=limit * 2, params=params2):
-                meta = self.parse_meta(raw)
-                if only_open and (meta.closed or meta.archived or meta.restricted):
-                    continue
-                if not meta.clob_token_ids:
-                    continue
-                out.append(meta)
-
-            print(f"[DEBUG] fallback_markets_candidates={len(out)}")
-        
-        print("[DEBUG] Reject reasons (top 10):", reject_reasons.most_common(10))
-        for reason, exs in examples.items():
-            print(f"\n[DEBUG] Examples for {reason}:")
-            for ex in exs:
-                print(ex)
-
-
-        return out
-
-    def list_open_unrestricted_markets(
-        self,
-        pages: int = 10,
-        limit: int = 100,
-        order: str = "volume24hr",
-        ascending: bool = False,
-        require_orderbook: bool = False,     # validaremos con CLOB después
-        hydrate_missing_tokens: bool = True,
-        hydrate_sleep_s: float = 0.02,
-    ) -> List[MarketMeta]:
-        """
-        Primary universe builder:
-        - Pull /markets sorted by volume24hr desc
-        - Keep only closed=false, archived=false, restricted=false
-        - If clobTokenIds missing, hydrate via /markets/{id}
-        """
-        params: Dict[str, Any] = {
-            "active": True,
-            "closed": False,
-            "archived": False,
-            "restricted": False,
-            "order": order,
-            "ascending": ascending,
-        }
-
-        out: List[MarketMeta] = []
-        seen = set()
-
-        for raw in self.gamma.iter_markets(pages=pages, limit=limit, params=params):
-            meta = self.parse_meta(raw)
-
-            if meta.market_id in seen:
-                continue
-            seen.add(meta.market_id)
-
-            # local guards
-            if meta.closed or meta.archived or meta.restricted:
-                continue
-
-            # optionally enforce orderbook flag if present
-            if require_orderbook and raw.get("enableOrderBook") is False:
-                continue
-
-            # hydrate if missing token ids
-            if (not meta.clob_token_ids) and hydrate_missing_tokens:
-                try:
-                    full = self.gamma.get_market_by_id(meta.market_id)
-                    meta = self.parse_meta(full)
-                    time.sleep(hydrate_sleep_s)
-                except Exception:
-                    continue
-
-            if not meta.clob_token_ids:
-                continue
-
-            out.append(meta)
-
-        return out
-
+    
