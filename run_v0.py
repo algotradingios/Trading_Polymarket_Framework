@@ -7,10 +7,17 @@ from config import FrameworkConfig
 from data_clients import GammaClient, ClobPublic
 from microstructure import depth5_notional, best_bid_ask
 from screening import ScreeningEngine, MarketSnapshot
+from settings import SETTINGS
 
 
 def main() -> None:
-    cfg = FrameworkConfig(equity=10_000.0, target_pos_frac=0.01)  # ejemplo
+    cfg = FrameworkConfig(
+        equity=SETTINGS.EQUITY,
+        target_pos_frac=SETTINGS.TARGET_POS_FRAC,
+        gamma_host=SETTINGS.GAMMA_HOST,
+        clob_host=SETTINGS.CLOB_HOST,
+        chain_id=SETTINGS.CHAIN_ID,
+    )
     gamma = GammaClient(cfg.gamma_host)
     clob = ClobPublic(cfg.clob_host, cfg.chain_id)
     screen = ScreeningEngine(cfg)

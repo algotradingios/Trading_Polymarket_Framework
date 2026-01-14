@@ -1,10 +1,9 @@
 import requests
 from collections import Counter
-
-GAMMA = "https://gamma-api.polymarket.com"
+from settings import SETTINGS
 
 def fetch(params):
-    r = requests.get(f"{GAMMA}/markets", params=params, timeout=20)
+    r = requests.get(f"{SETTINGS.GAMMA_HOST}/markets", params=params, timeout=20)
     r.raise_for_status()
     return r.json()
 

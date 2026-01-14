@@ -5,28 +5,35 @@ import providers
 print("providers loaded from:", providers.__file__)
 
 from screening_engine import ScreeningConfig, ScreeningEngine
+from settings import SETTINGS
 
 
 def main() -> None:
+    
     provider = MarketDataProvider(
-        gamma_host="https://gamma-api.polymarket.com",
-        clob_host="https://clob.polymarket.com",
-        chain_id=137,
+        gamma_host=SETTINGS.GAMMA_HOST,
+        clob_host=SETTINGS.CLOB_HOST,
+        chain_id=SETTINGS.CHAIN_ID,
     )
 
     # Ajusta esto a tu capital real asignado
-    scfg = ScreeningConfig(equity=10_000.0, target_pos_frac=0.01)
+    scfg = ScreeningConfig(
+        equity=SETTINGS.EQUITY,
+        target_pos_frac=SETTINGS.TARGET_POS_FRAC,
+    )
     screener = ScreeningEngine(scfg)
 
     # 1) Traer candidatos "abiertos" (importantísimo para evitar tu problema de mercados históricos)
-    metas = provider.list_open_unrestricted_markets(
-        pages=15,
-        limit=100,
-        order="volume24hr",
-        ascending=False,
-        require_orderbook=False,
-        hydrate_missing_tokens=True,
+    metas = provider.list_open_markets_universe(
+        pages=SETTINGS.PAGES,
+        limit=SETTINGS.LIMIT,
+        order=SETTINGS.ORDER,
+        ascending=SETTINGS.ASCENDING,
+        only_open=True,
+        allow_restricted=SETTINGS.ALLOW_RESTRICTED,
+        require_tokens=True,
     )
+
 
 
     print("First 5 candidates:")
