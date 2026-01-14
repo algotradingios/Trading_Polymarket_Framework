@@ -1,186 +1,284 @@
 # Polymarket Quantitative Research Framework
 
-## Overview
+A modular, capital-aware, Python-based framework for **quantitative research on Polymarket prediction markets**, with a strict separation between **research** and **execution**.
 
-This project is a modular, parametrized quantitative research framework for analyzing and designing trading strategies on Polymarket prediction markets, with a strong focus on:
+This repository is designed to let you:
 
-- **Market screening and liquidity feasibility**
-- **Detection of automated (bot-dominated) vs human-driven markets**
-- **Microstructure-based alpha** (e.g. liquidity cascades, mechanical price moves)
-- **Information-based alpha** (wording, resolution mechanics)
-- **Clean separation between research and execution**
+- Analyze live Polymarket markets from any location
+- Study liquidity, microstructure, and behavioral inefficiencies
+- Design and validate strategies in paper/research mode
+- Deploy the same logic to execution **only** in jurisdictions where trading is permitted
 
-The framework is written in Python and is designed to be directly operable in research mode from any location, while keeping execution logic explicitly isolated due to regulatory and geographic constraints.
+---
 
-## Key Design Principles
+## ⚠️ Important Notice (Read First)
 
-### Research-first architecture
-All alpha generation logic (screening, signals, regime detection) is fully functional without placing trades.
+From **Spain, the EU, and many other jurisdictions**, Polymarket markets are returned as:
 
-### Execution decoupling
-Order placement is intentionally abstracted and disabled by default.
+```text
+restricted = true
+```
 
-### Empirical robustness
-All decisions (market inclusion, strategy eligibility) are driven by measurable quantities:
+This means:
 
-- Volume
-- Order book depth
-- Exit risk
-- Market microstructure behavior
+- You can read market data (Gamma API, CLOB order books)
+- You cannot place trades from that environment
+- This is regulatory / jurisdictional, not a bug
 
-### Geographic awareness
-The framework explicitly models and respects Polymarket's jurisdictional restrictions.
+**This framework does not bypass restrictions.**
 
-## Core Functionalities
+Instead, it is explicitly designed to:
 
-### 1. Market Universe Construction
+- Work fully in research mode everywhere
+- Be deployable for execution unchanged in a permitted environment
 
-- Fetches markets from Polymarket Gamma API
-- Orders markets by activity (e.g. volume24hr)
-- Builds a universe of open markets
-- Supports two modes:
-  - **Research mode**: includes restricted markets
-  - **Execution mode**: excludes restricted markets
+### What This Repository Is
 
-**Key fields handled:**
-- `active`, `closed`, `archived`, `restricted`
-- `clobTokenIds`
-- Liquidity and volume metrics
+- A research-grade quantitative framework for prediction markets
+- A tool for alpha discovery, not blind automation
+- A system that treats liquidity, exit risk, and regime changes as first-class constraints
+- A foundation you can later deploy for execution without refactoring
+
+### What This Repository Is NOT
+
+- A trading bot you can run blindly
+- A way to bypass geographic or legal restrictions
+- Financial or legal advice
+- A guarantee of profitability
+
+## Core Capabilities
+
+### 1. Market Universe Discovery
+
+- Pulls live markets from the Polymarket Gamma API
+- Orders markets by activity (e.g. `volume24hr`)
+- Handles multiple API payload variants robustly
+- Works even when `restricted=true`
 
 ### 2. Liquidity & Exit Feasibility Screening
 
-Each market is screened using capital-aware constraints:
+Markets are filtered using capital-aware constraints:
 
-- Minimum effective depth (Depth5 proxy)
 - Minimum 24h volume
-- Exit risk (position size relative to volume)
-- Strategy-specific thresholds (A* vs H*)
+- Top-of-book depth (Depth5 proxy)
+- Exit risk (position size vs volume)
+- Strategy-specific thresholds
 
-This ensures the framework never proposes trades that are not realistically exitable.
+This prevents "fake alpha" that only works at infinitesimal size.
 
 ### 3. Market Regime Classification (BotScore V0)
 
-Markets are classified into regimes based on observable proxies:
+Markets are classified as:
+
+- **BOT-dominated**
+- **HUMAN-dominated**
+- **MIXED**
+
+Using observable microstructure proxies:
 
 - Quote churn
 - Price movement per unit volume
 - Order book symmetry
 - Book update vs trade ratio
 
-**Regimes:**
-- **BOT-dominated**
-- **HUMAN-dominated**
-- **MIXED**
-
-This classification routes markets to appropriate strategy families.
-
 ### 4. Strategy Families
 
-#### A* — Automated / Microstructure Strategies
+- **A\*** — Automated / microstructure strategies
+  - Liquidity cascades
+  - Spread explosions
+  - Mechanical dislocations
 
-Designed for bot-dominated markets:
+- **H\*** — Human / informational strategies
+  - Wording ambiguity
+  - Resolution mechanics
+  - Scenario mispricing
 
-- Liquidity cascades
-- Spread explosions
-- Depth collapses
-- Mechanical price jumps with low volume
-
-**Includes:**
-- Formal cascade detector (A2)
-- Clear entry, exit, and stop logic
-- Short holding times
-
-#### H* — Human / Informational Strategies
-
-Designed for human-driven markets:
-
-- Ambiguous wording
-- Resolution mechanics
-- Mispriced probabilities
-
-**Includes:**
-- Formal checklist-based decision process
-- Scenario trees
-- Explicit thesis invalidation rules
+Each strategy is only considered valid in its appropriate regime.
 
 ### 5. Research Mode (Default)
 
-In research mode, the framework:
+- Fully functional from any location (Spain/EU/UK/US)
+- Reads live market data
+- Generates signals
+- Logs paper PnL
+- Places no trades
 
-- Analyzes all open markets, including `restricted=true`
-- Computes signals and strategy eligibility
-- Logs signals and simulated PnL
-- Does not place trades
+### 6. Execution Mode (Optional, Disabled)
 
-This mode is fully functional from jurisdictions such as:
+- Uses the exact same logic as research mode
+- Requires a permitted runtime environment
+- Execution is isolated behind an adapter and disabled by default
 
-- Spain
-- EU
-- UK
-- US
+## Installation
 
-### 6. Execution Mode (Optional, Disabled by Default)
+This repository uses `uv` for dependency management.
 
-Execution logic is intentionally isolated behind an adapter interface.
+### Prerequisites
 
-**Execution mode requires:**
-- A runtime environment where Polymarket markets are not restricted
-- A compliant wallet and signer
-- Explicit user activation
+- Python 3.10+
+- `uv`
 
-**No execution code is enabled by default.**
+### Setup
 
-## Geographic & Regulatory Limitations
+```bash
+uv sync
+```
 
-### Important Notice
+This creates a reproducible environment based on `pyproject.toml` and `uv.lock`.
 
-Polymarket applies jurisdiction-based access restrictions.
+## Quickstart (Research Mode)
 
-From certain locations (including Spain and most of the EU):
+### 1) Check your environment's restriction status
 
-- Markets appear as `restricted=true`
-- Order placement is blocked
-- Only read-only access (market data) is permitted
+This is the recommended first step.
 
-**This framework does not bypass these restrictions.**
+```bash
+uv run python gamma_sanity.py
+```
 
-### Supported Modes by Geography
+This script prints:
 
-| Location | Research Mode | Execution Mode |
-|----------|--------------|----------------|
-| Spain / EU | ✅ Yes | ❌ No |
-| UK | ✅ Yes | ❌ No |
-| US | ⚠️ Limited | ❌ No |
-| Allowed Jurisdictions | ✅ Yes | ✅ Yes |
+- How many markets are restricted
+- How many are open (`closed=false`)
+- Whether outcome tokens (`clobTokenIds`) are present
 
-> **Note:** Execution is only possible if the runtime environment is legally and technically permitted by Polymarket.
+From Spain/EU, you should expect all major markets to be restricted.
 
-## Project Structure
+### 2) Build a market universe and screen it
+
+```bash
+uv run python run_screening_v1.py
+```
+
+This will:
+
+- Discover open markets
+- Apply liquidity and exit-risk screening
+- Report how many markets are usable for research
+
+You will typically see:
+
+- Many candidates in research mode
+- Zero candidates in execution mode (expected in restricted jurisdictions)
+
+### 3) Adjust capital assumptions
+
+Screening is capital-aware. Edit your configuration (e.g. in `run_screening_v1.py`):
+
+```python
+equity = 10_000.0
+target_pos_frac = 0.01  # 1% per position
+```
+
+Smaller capital assumptions allow more markets to pass exit-risk constraints.
+
+## Research vs Execution Modes
+
+### Research Mode (Default)
+
+```python
+ALLOW_RESTRICTED = True
+EXECUTION_ENABLED = False
+```
+
+- Works everywhere
+- No wallet required
+- No orders placed
+- Intended for strategy development and validation
+
+### Execution Mode (Optional)
+
+```python
+ALLOW_RESTRICTED = False
+EXECUTION_ENABLED = True
+```
+
+**Requires:**
+
+- A jurisdiction where Polymarket allows trading
+- A compliant runtime environment
+- A wallet and signer
+- Explicit user opt-in
+
+## Recommended Deployment Architecture
+
+```
+Research Engine (anywhere)
+        │
+        ▼
+Signals / Logs (JSON, DB)
+        │
+        ▼
+Execution Engine (permitted jurisdiction)
+        │
+        ▼
+Polymarket CLOB
+```
+
+This separation ensures:
+
+- **Legal clarity**
+- **Auditability**
+- **Operational robustness**
+
+## Repository Structure
 
 ```
 .
 ├── providers.py          # Gamma & CLOB data access
-├── screening_engine.py   # Liquidity & exit feasibility
+├── screening_engine.py   # Liquidity & exit-risk screening
 ├── bot_score.py          # Market regime classification
-├── a2_detector.py        # Liquidity cascade detection
+├── a2_detector.py        # Microstructure cascade detection
 ├── h1_checklist.py       # Informational strategy framework
-├── run_screening_v1.py   # Research pipeline entry point
-├── gamma_sanity.py       # API diagnostics
+├── run_screening_v1.py  # Research pipeline entry point
+├── gamma_sanity.py       # Environment & API diagnostics
+├── pyproject.toml
+├── uv.lock
 ├── README.md
+├── RESEARCH_METHODOLOGY.md
+├── DEPLOYMENT_GUIDE.md
 └── LICENSE
 ```
 
-## Intended Use Cases
+## Common Pitfalls
 
-- Quantitative research on prediction markets
-- Market microstructure analysis
-- Strategy prototyping and validation
-- Paper trading / simulated execution
-- Preparation for deployment in permitted environments
+### "Candidates(open & tokenized): 0"
 
-## Non-Goals
+This usually means:
 
-- Circumventing geographic restrictions
-- Providing legal advice
-- Automating trading in restricted jurisdictions
-- Offering financial recommendations
+- You are filtering `restricted=false` in a restricted jurisdiction
+- Or you are unintentionally excluding all markets
+
+**Solution:** Run `gamma_sanity.py` to confirm what Gamma returns in your environment.
+
+### "Order book fetch fails"
+
+- Some tokens have unstable books
+- Rate limiting may apply
+
+**Mitigations:**
+
+- Retries and backoff (already supported)
+- Small sleeps between calls
+- Future upgrade to websockets
+
+## License
+
+MIT License. See [LICENSE](LICENSE) file.
+
+## Final Notes
+
+This project is intentionally:
+
+- **Conservative**
+- **Explicit about limitations**
+- **Designed for serious quantitative research**
+
+If you want to extend it further, natural next additions include:
+
+- A paper-trading backtester aligned with live signals
+- Statistical validation tooling
+- A production execution checklist
+- Monitoring and alerting
+
+The framework is ready when you are ready to deploy it.
