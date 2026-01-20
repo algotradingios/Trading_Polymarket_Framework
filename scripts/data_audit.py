@@ -92,16 +92,21 @@ def run_audit(cfg: AuditConfig) -> None:
     clob_ok_mid = 0
     clob_ok_spread = 0
     clob_total = 0
+    clob_errors: Counter = Counter()
 
     depth5_vals: List[float] = []
     spread_vals: List[float] = []
     mid_vals: List[float] = []
 
     sample_markets: List[Dict[str, Any]] = []
+    open_markets_count = 0
 
     for page in range(cfg.pages):
         offset = page * cfg.limit
-        params = {}
+        params = {
+            "closed": False,  # Only fetch open markets for CLOB testing
+            "archived": False,
+        }
         if cfg.active_only:
             params["active"] = True
 
@@ -114,6 +119,10 @@ def run_audit(cfg: AuditConfig) -> None:
             # record keys
             for k in m.keys():
                 key_freq[k] += 1
+
+            # Track open markets
+            if not m.get("closed", True) and not m.get("archived", False):
+                open_markets_count += 1
 
             tokens = extract_token_ids(m)
             if tokens:
@@ -129,9 +138,11 @@ def run_audit(cfg: AuditConfig) -> None:
             if len(sample_markets) < 10:
                 sample_markets.append(m)
 
-            # audit CLOB only if token id exists
+            # audit CLOB only if token id exists and market is open
             if not tokens:
                 continue
+            if m.get("closed", True) or m.get("archived", False):
+                continue  # Skip closed/archived markets for CLOB testing
 
             token_id = tokens[0]
             clob_total += 1
@@ -139,20 +150,36 @@ def run_audit(cfg: AuditConfig) -> None:
             try:
                 ob = clob.get_order_book(token_id)
                 clob_ok_ob += 1
-                d5 = depth5_notional_proxy(ob, k=cfg.topk_depth)
-                depth5_vals.append(d5)
-            except Exception:
-                pass
+                try:
+                    d5 = depth5_notional_proxy(ob, k=cfg.topk_depth)
+                    if d5 > 0:  # Only append if we got valid depth
+                        depth5_vals.append(d5)
+                except Exception as e:
+                    # Depth calculation failed, but order book fetch succeeded
+                    error_type = type(e).__name__
+                    clob_errors[error_type] += 1
+            except Exception as e:
+                # Order book fetch failed
+                error_type = type(e).__name__
+                clob_errors[error_type] += 1
 
-            mid = clob.get_midpoint(token_id)
-            if mid is not None:
-                clob_ok_mid += 1
-                mid_vals.append(mid)
+            try:
+                mid = clob.get_midpoint(token_id)
+                if mid is not None:
+                    clob_ok_mid += 1
+                    mid_vals.append(mid)
+            except Exception as e:
+                error_type = type(e).__name__
+                clob_errors[error_type] += 1
 
-            spr = clob.get_spread(token_id)
-            if spr is not None:
-                clob_ok_spread += 1
-                spread_vals.append(spr)
+            try:
+                spr = clob.get_spread(token_id)
+                if spr is not None:
+                    clob_ok_spread += 1
+                    spread_vals.append(spr)
+            except Exception as e:
+                error_type = type(e).__name__
+                clob_errors[error_type] += 1
 
             if cfg.sleep_s > 0:
                 time.sleep(cfg.sleep_s)
@@ -180,13 +207,22 @@ def run_audit(cfg: AuditConfig) -> None:
     else:
         print("No volume keys detected among candidates:", VOL_KEYS_CANDIDATES)
 
-    print("\n--- CLOB access quality (for first token_id per market) ---")
+    print("\n--- Market status ---")
+    print(f"Open markets (closed=False, archived=False): {open_markets_count}/{total_markets_seen}")
+
+    print("\n--- CLOB access quality (for open markets with token_ids) ---")
     if clob_total > 0:
-        print(f"Order book success: {clob_ok_ob}/{clob_total} ({clob_ok_ob/clob_total:.1%})")
-        print(f"Midpoint   success: {clob_ok_mid}/{clob_total} ({clob_ok_mid/clob_total:.1%})")
-        print(f"Spread     success: {clob_ok_spread}/{clob_total} ({clob_ok_spread/clob_total:.1%})")
+        print(f"Markets tested: {clob_total}")
+        print(f"Order book success: {clob_ok_ob}/{clob_total} ({clob_ok_ob/max(clob_total,1):.1%})")
+        print(f"Midpoint   success: {clob_ok_mid}/{clob_total} ({clob_ok_mid/max(clob_total,1):.1%})")
+        print(f"Spread     success: {clob_ok_spread}/{clob_total} ({clob_ok_spread/max(clob_total,1):.1%})")
+        if clob_errors:
+            print(f"\nCLOB error types encountered:")
+            for err_type, count in clob_errors.most_common():
+                print(f"  {err_type}: {count}")
     else:
-        print("No token IDs found; CLOB audit skipped.")
+        print("No open markets with token IDs found; CLOB audit skipped.")
+        print("Note: Try fetching more pages or check if markets are closed/archived.")
 
     def summarize(arr: List[float], name: str) -> None:
         if not arr:

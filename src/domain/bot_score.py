@@ -65,24 +65,83 @@ class BotScoreV0:
 # Simplified interface functions for engine_research.py
 def botscore_v0(inputs: BotScoreInputs) -> float:
     """
-    Simplified botscore calculation from snapshot inputs.
-    Uses PMWV (price movement per unit volume) as proxy.
+    Improved botscore calculation from snapshot inputs.
+    
+    Bot-like markets exhibit:
+    - High price movement per unit volume (PMWV) - bots create volatility
+    - Tight spreads relative to price level
+    - High depth relative to volume (liquidity provision)
+    - Low spread volatility (stable market making)
+    
+    Human-like markets exhibit:
+    - Low PMWV (price moves reflect information, not noise)
+    - Wider spreads (less continuous market making)
+    - Lower depth/volume ratios
+    - More asymmetric order books
+    
+    Returns score in [0, 1] where:
+    - >= 0.65: BOT regime
+    - <= 0.40: HUMAN regime  
+    - 0.40-0.65: MIXED regime
     """
-    if inputs.vol24h <= 0 or inputs.mid_move_abs is None:
-        return 0.5  # neutral
+    if inputs.vol24h <= 0:
+        return 0.5  # neutral if no volume
     
+    # 1) PMWV component (price movement per unit volume)
+    # Higher PMWV = more bot-like (bots create noise/volatility)
+    # Use log scale to handle wide range of values
     pmwv = inputs.mid_move_abs / max(inputs.vol24h, 1e-9)
+    # Typical range: 0.000001 to 0.1
+    # Use sigmoid-like transformation: log(1 + pmwv * 10000) / log(10001)
+    pmwv_score = min(1.0, np.log1p(pmwv * 10000) / np.log(10001))
     
-    # Simple heuristic: high PMWV + low spread + high depth = more bot-like
-    # This is a simplified version; full version would use percentile ranking
-    spread_norm = (inputs.spread or 0.1) / 0.1  # normalize around 0.1
-    depth_norm = (inputs.depth5 or 0) / 1000.0  # normalize around 1000
+    # 2) Spread tightness component
+    # Lower spread = more bot-like (market makers keep spreads tight)
+    if inputs.spread is None or inputs.spread <= 0:
+        spread_score = 0.5  # neutral if no spread data
+    else:
+        # Typical spreads: 0.001 (tight) to 0.1 (wide)
+        # Invert: tight spreads get high scores
+        # Use sigmoid: 1 / (1 + spread * 100)
+        spread_score = 1.0 / (1.0 + inputs.spread * 100)
     
-    # Higher PMWV = more bot-like
-    # Lower spread = more bot-like  
-    # Higher depth = more bot-like
-    score = min(1.0, max(0.0, 0.3 + pmwv * 0.3 - spread_norm * 0.2 + depth_norm * 0.2))
-    return score
+    # 3) Depth-to-volume ratio component
+    # Higher depth/volume = more bot-like (liquidity provision)
+    if inputs.depth5 is None or inputs.depth5 <= 0:
+        depth_score = 0.3  # lower score if no depth
+    else:
+        # Depth-to-volume ratio: how much liquidity vs trading activity
+        depth_vol_ratio = inputs.depth5 / max(inputs.vol24h, 1e-9)
+        # Typical range: 0.01 to 10+
+        # Use log scale: log(1 + ratio) / log(11)
+        depth_score = min(1.0, np.log1p(depth_vol_ratio) / np.log(11))
+    
+    # 4) Spread stability proxy (using current spread as indicator)
+    # Very tight spreads (< 0.002) suggest active market making (bot-like)
+    # Very wide spreads (> 0.05) suggest less market making (human-like)
+    if inputs.spread is None:
+        stability_score = 0.5
+    else:
+        if inputs.spread < 0.002:
+            stability_score = 1.0  # very tight = bot-like
+        elif inputs.spread < 0.01:
+            stability_score = 0.7  # tight = somewhat bot-like
+        elif inputs.spread < 0.05:
+            stability_score = 0.4  # moderate = mixed
+        else:
+            stability_score = 0.2  # wide = human-like
+    
+    # Weighted combination
+    # PMWV is most important (30%), then spread tightness (25%), depth ratio (25%), stability (20%)
+    score = (
+        0.30 * pmwv_score +
+        0.25 * spread_score +
+        0.25 * depth_score +
+        0.20 * stability_score
+    )
+    
+    # Ensure score is in [0, 1]
+    return float(np.clip(score, 0.0, 1.0))
 
 
 def regime_from_score(bot_score: float) -> str:

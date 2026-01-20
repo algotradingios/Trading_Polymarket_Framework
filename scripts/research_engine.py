@@ -89,6 +89,12 @@ def main() -> None:
         ok_count = 0
         a2_fires = 0
         h1_candidates = 0
+        skipped_no_clob = 0
+        skipped_screening = 0
+        skipped_regime = 0
+        
+        # Track markets for detailed output
+        market_details: list[tuple[str, str, float, str, bool, bool, str]] = []  # slug, regime, botscore, resA, resH, routing
 
         for meta in metas:
             snap = provider.fetch_snapshot(meta, depth_k=5, retries=3, prefer_liquid_token=True)
@@ -112,6 +118,10 @@ def main() -> None:
                     restricted=1 if meta.restricted else 0,
                 )
             )
+            
+            if not snap.ok_clob:
+                skipped_no_clob += 1
+                continue
 
             # Screening: use A thresholds for BOT-ish, H thresholds for HUMAN-ish later.
             # For now, screen both; we'll route after score.
@@ -119,6 +129,7 @@ def main() -> None:
             resH = screener.screen(family="H", vol24h=snap.vol24h, depth5=snap.depth5, ok_clob=snap.ok_clob)
 
             if not (resA.ok or resH.ok):
+                skipped_screening += 1
                 continue
             ok_count += 1
 
@@ -146,11 +157,22 @@ def main() -> None:
             med_spread, med_depth = rolling[meta.market_id].medians()
 
             # Router
+            routing = ""
             if regime in ("BOT", "MIXED"):
                 # Prefer A screening
                 if not resA.ok:
+                    skipped_regime += 1
+                    routing = f"BOT/MIXED but A screening failed (depth5={snap.depth5:.0f} need≥{resA.depth5_min:.0f}, vol24h={snap.vol24h:.0f} need≥{resA.vol24h_min:.0f})"
+                    market_details.append((meta.slug, regime, bs, resA.ok, resH.ok, routing))
                     continue
+                routing = f"→ A2 (BOT/MIXED regime)"
                 st = a2_state.get(meta.market_id, A2State())
+                
+                # Show A2 detection details
+                spread_str = f"{med_spread:.6f}" if med_spread is not None else "None"
+                depth_str = f"{med_depth:.0f}" if med_depth is not None else "None"
+                hist_status = f"hist: spread={spread_str}, depth={depth_str}"
+                
                 sig = a2_detect(
                     curr_mid=snap.mid,
                     curr_spread=snap.spread,
@@ -164,6 +186,7 @@ def main() -> None:
 
                 if sig.fired:
                     a2_fires += 1
+                    routing += f" [FIRED: {sig.details}]"
                     store.insert_signal(SignalRow(
                         ts=cycle_ts,
                         market_id=meta.market_id,
@@ -173,6 +196,7 @@ def main() -> None:
                         strength=float(sig.strength),
                         details=sig.details
                     ))
+                    print(f"  [DB] ✅ Signal inserted: A2 FADE_CASCADE for {meta.slug[:50]} (strength={sig.strength:.3f}, {sig.details})")
 
                     # Prepare an order intent (paper)
                     intent = OrderIntent(
@@ -184,10 +208,16 @@ def main() -> None:
                         strategy="A2"
                     )
                     execution.place_order(intent)  # no-op in research
+                else:
+                    routing += f" [no signal: {sig.details}] ({hist_status})"
             else:
                 # HUMAN regime → H1 candidate (manual checklist)
                 if not resH.ok:
+                    skipped_regime += 1
+                    routing = f"HUMAN but H screening failed"
+                    market_details.append((meta.slug, regime, bs, resA.ok, resH.ok, routing))
                     continue
+                routing = f"→ H1 (HUMAN regime)"
                 h1_candidates += 1
                 store.insert_signal(SignalRow(
                     ts=cycle_ts,
@@ -198,8 +228,63 @@ def main() -> None:
                     strength=0.5,
                     details="Human-regime candidate; run wording/resolution checklist manually."
                 ))
+                print(f"  [DB] Signal inserted: H1 CANDIDATE for {meta.slug[:50]}")
+            
+            market_details.append((meta.slug, regime, bs, resA.ok, resH.ok, routing))
+            # Show detailed info for markets that pass screening
+            print(f"  [DB] Snapshot: {meta.slug[:50]:50s}")
+            print(f"       BotScore={bs:.3f} ({regime:6s}) | A={resA.ok} H={resH.ok} | depth5={snap.depth5:.0f} vol24h={snap.vol24h:.0f}")
+            print(f"       {routing}")
 
-        print(f"Screenable markets: {ok_count} | A2 fires: {a2_fires} | H1 candidates: {h1_candidates}")
+        # Summary output
+        print(f"\n{'='*100}")
+        print(f"Cycle Summary:")
+        print(f"  Screenable markets: {ok_count}")
+        print(f"  A2 fires: {a2_fires}")
+        print(f"  H1 candidates: {h1_candidates}")
+        print(f"\n  Filtered out:")
+        print(f"    No CLOB access: {skipped_no_clob}")
+        print(f"    Failed screening (A & H): {skipped_screening}")
+        print(f"    Regime mismatch: {skipped_regime}")
+        
+        # Show markets grouped by regime
+        if market_details:
+            bot_markets = [m for m in market_details if m[1] in ("BOT", "MIXED")]
+            human_markets = [m for m in market_details if m[1] == "HUMAN"]
+            
+            print(f"\n  Markets by Regime (for strategy routing):")
+            print(f"    BOT/MIXED markets ({len(bot_markets)}): → A2 strategy (microstructure-based)")
+            for slug, regime, bs, okA, okH, routing in sorted(bot_markets, key=lambda x: x[2], reverse=True)[:5]:
+                tags = []
+                if okA:
+                    tags.append("A")
+                if okH:
+                    tags.append("H")
+                tag_str = f"[{'+'.join(tags)}]" if tags else "[--]"
+                print(f"      {tag_str:6s} {slug[:45]:45s} BotScore={bs:.3f} ({regime:6s})")
+            
+            print(f"\n    HUMAN markets ({len(human_markets)}): → H1 strategy (information-based)")
+            for slug, regime, bs, okA, okH, routing in sorted(human_markets, key=lambda x: x[2], reverse=False)[:5]:
+                tags = []
+                if okA:
+                    tags.append("A")
+                if okH:
+                    tags.append("H")
+                tag_str = f"[{'+'.join(tags)}]" if tags else "[--]"
+                print(f"      {tag_str:6s} {slug[:45]:45s} BotScore={bs:.3f} ({regime:6s})")
+            
+            if len(bot_markets) > 5 or len(human_markets) > 5:
+                print(f"    ... (showing top 5 of each regime)")
+            
+            # Explain why A2/H1 aren't firing
+            if a2_fires == 0 and len(bot_markets) > 0:
+                print(f"\n  ⚠️  A2 not firing: Requires cascade conditions (spread expansion + depth collapse + mid jump)")
+                print(f"     Need at least 2/3 conditions. Historical medians are being built up over cycles.")
+            if h1_candidates == 0 and len(human_markets) == 0:
+                print(f"\n  ⚠️  H1 candidates: 0 (all markets classified as BOT/MIXED)")
+                print(f"     BotScore calculation may need tuning. Current threshold: BOT≥0.65, HUMAN≤0.40")
+        
+        print(f"{'='*100}")
         time.sleep(SETTINGS.LOOP_SLEEP_S)
 
 
