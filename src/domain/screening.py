@@ -62,7 +62,6 @@ class ScreeningEngine:
             return ScreeningResult(False, "DEPTH_TOO_LOW", family, S, None, depth5_min, vol24h_min)
 
         if vol24h is None:
-            # Tu audit dice que volume24hr existe siempre en Gamma, así que si llega None hay bug upstream.
             return ScreeningResult(False, "VOL24H_MISSING", family, S, None, depth5_min, vol24h_min)
 
         if vol24h < vol24h_min:

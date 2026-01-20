@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from providers import MarketDataProvider
-import providers
-print("providers loaded from:", providers.__file__)
+import sys
+from pathlib import Path
 
-from screening_engine import ScreeningConfig, ScreeningEngine
-from settings import SETTINGS
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.data.clients import MarketDataProvider
+from src.domain.screening import ScreeningConfig, ScreeningEngine
+from src.config.settings import SETTINGS
 
 
 def main() -> None:
@@ -16,7 +19,6 @@ def main() -> None:
         chain_id=SETTINGS.CHAIN_ID,
     )
 
-    # Ajusta esto a tu capital real asignado
     scfg = ScreeningConfig(
         equity=SETTINGS.EQUITY,
         target_pos_frac=SETTINGS.TARGET_POS_FRAC,
@@ -34,12 +36,9 @@ def main() -> None:
         require_tokens=True,
     )
 
-
-
     print("First 5 candidates:")
     for mm in metas[:5]:
         print(" -", mm.slug, "closed=", mm.closed, "vol24h=", mm.volume24h, "tokens=", len(mm.clob_token_ids))
-
 
     print(f"Candidates(open & tokenized): {len(metas)}")
 

@@ -1,86 +1,21 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 import argparse
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import requests
 
-from py_clob_client.client import ClobClient
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-
-# -----------------------------
-# Clients (Gamma + CLOB public)
-# -----------------------------
-
-class GammaClient:
-    def __init__(self, host: str, timeout_s: int = 20):
-        self.host = host.rstrip("/")
-        self.timeout_s = timeout_s
-
-    def get_markets(self, limit: int, offset: int, **params: Any) -> List[Dict[str, Any]]:
-        url = f"{self.host}/markets"
-        p = {"limit": limit, "offset": offset, **params}
-        r = requests.get(url, params=p, timeout=self.timeout_s)
-        r.raise_for_status()
-        data = r.json()
-        if not isinstance(data, list):
-            raise ValueError(f"Unexpected Gamma response type: {type(data)}")
-        return data
-
-
-class ClobPublic:
-    def __init__(self, host: str, chain_id: int):
-        self.client = ClobClient(host=host, chain_id=chain_id)
-
-    def get_order_book(self, token_id: str) -> Dict[str, Any]:
-        return self.client.get_order_book(token_id)
-
-    def get_midpoint(self, token_id: str) -> Optional[float]:
-        try:
-            resp = self.client.get_midpoint(token_id)
-            return float(resp["mid"])
-        except Exception:
-            return None
-
-    def get_spread(self, token_id: str) -> Optional[float]:
-        try:
-            resp = self.client.get_spread(token_id)
-            return float(resp["spread"])
-        except Exception:
-            return None
-
-
-# -----------------------------
-# Microstructure utilities
-# -----------------------------
-
-def _sum_top_levels_notional(levels: List[Dict[str, str]], k: int = 5) -> float:
-    """
-    Approximates notional depth as sum(price*size) across top k levels.
-    NOTE: this assumes 'size' is quantity of shares/contracts and price is [0,1] in USDC/share.
-    We'll later verify semantics; for audit/ranking it is typically sufficient.
-    """
-    s = 0.0
-    for lvl in levels[:k]:
-        try:
-            px = float(lvl["price"])
-            sz = float(lvl["size"])
-            s += px * sz
-        except Exception:
-            continue
-    return s
-
-
-def depth5_proxy(order_book: Dict[str, Any], k: int = 5) -> Tuple[float, float, float]:
-    bids = order_book.get("bids", []) or []
-    asks = order_book.get("asks", []) or []
-    bid = _sum_top_levels_notional(bids, k=k)
-    ask = _sum_top_levels_notional(asks, k=k)
-    return bid, ask, bid + ask
+from src.config.settings import SETTINGS
+from src.data.clients import GammaClient, ClobPublic
+from src.data.clients import depth5_notional_proxy
 
 
 # -----------------------------
@@ -114,6 +49,14 @@ def extract_token_ids(m: Dict[str, Any]) -> List[str]:
         v = m.get(k)
         if isinstance(v, list) and v:
             return [str(x) for x in v]
+        if isinstance(v, str) and v.strip().startswith("["):
+            try:
+                import json
+                arr = json.loads(v)
+                if isinstance(arr, list):
+                    return [str(x) for x in arr]
+            except Exception:
+                pass
     return []
 
 
@@ -160,7 +103,6 @@ def run_audit(cfg: AuditConfig) -> None:
         offset = page * cfg.limit
         params = {}
         if cfg.active_only:
-            # Gamma typically supports active=true style filtering; if not, it will be ignored.
             params["active"] = True
 
         markets = gamma.get_markets(limit=cfg.limit, offset=offset, **params)
@@ -197,10 +139,9 @@ def run_audit(cfg: AuditConfig) -> None:
             try:
                 ob = clob.get_order_book(token_id)
                 clob_ok_ob += 1
-                _, _, d5 = depth5_proxy(ob, k=cfg.topk_depth)
+                d5 = depth5_notional_proxy(ob, k=cfg.topk_depth)
                 depth5_vals.append(d5)
             except Exception:
-                # can't read orderbook
                 pass
 
             mid = clob.get_midpoint(token_id)
@@ -270,7 +211,7 @@ def run_audit(cfg: AuditConfig) -> None:
     for i, m in enumerate(sample_markets[:5], start=1):
         print(f"\nSample #{i}")
         for k in sorted(m.keys()):
-            if k in ("description", "rules", "question"):  # keep some readable fields
+            if k in ("description", "rules", "question"):
                 print(f"  {k}: {safe_str(m.get(k))}")
             elif k in VOL_KEYS_CANDIDATES or k in TOKEN_KEYS_CANDIDATES or k in ("id", "slug", "active", "closed", "endDateIso", "end_date_iso"):
                 print(f"  {k}: {safe_str(m.get(k))}")
@@ -294,9 +235,9 @@ def run_audit(cfg: AuditConfig) -> None:
 
 def parse_args() -> AuditConfig:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gamma-host", default="https://gamma-api.polymarket.com")
-    ap.add_argument("--clob-host", default="https://clob.polymarket.com")
-    ap.add_argument("--chain-id", type=int, default=137)
+    ap.add_argument("--gamma-host", default=SETTINGS.GAMMA_HOST)
+    ap.add_argument("--clob-host", default=SETTINGS.CLOB_HOST)
+    ap.add_argument("--chain-id", type=int, default=SETTINGS.CHAIN_ID)
     ap.add_argument("--pages", type=int, default=2, help="Number of pages to fetch")
     ap.add_argument("--limit", type=int, default=50, help="Markets per page")
     ap.add_argument("--active-only", action="store_true", help="Attempt to filter active markets")

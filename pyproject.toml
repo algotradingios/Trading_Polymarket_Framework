@@ -1,11 +1,27 @@
 [project]
-name = "general-polymarket-bots"
+name = "polymarket-framework"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Quantitative research framework for Polymarket prediction markets"
+readme = "docs/README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.1",
     "py-clob-client>=0.34.5",
     "requests>=2.32.5",
 ]
+
+[project.scripts]
+polymarket-research = "scripts.research_engine:main"
+polymarket-screening = "scripts.screening:main"
+polymarket-diagnostics = "scripts.diagnostics:main"
+polymarket-audit = "scripts.data_audit:run_audit"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

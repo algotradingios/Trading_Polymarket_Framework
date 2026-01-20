@@ -133,7 +133,7 @@ This creates a reproducible environment based on `pyproject.toml` and `uv.lock`.
 This is the recommended first step.
 
 ```bash
-uv run python gamma_sanity.py
+uv run python -m scripts.diagnostics
 ```
 
 This script prints:
@@ -147,7 +147,7 @@ From Spain/EU, you should expect all major markets to be restricted.
 ### 2) Build a market universe and screen it
 
 ```bash
-uv run python run_screening_v1.py
+uv run python -m scripts.screening
 ```
 
 This will:
@@ -161,13 +161,25 @@ You will typically see:
 - Many candidates in research mode
 - Zero candidates in execution mode (expected in restricted jurisdictions)
 
-### 3) Adjust capital assumptions
+### 3) Run the research engine
 
-Screening is capital-aware. Edit your configuration (e.g. in `run_screening_v1.py`):
+```bash
+uv run python -m scripts.research_engine
+```
+
+This runs the main research loop that:
+- Continuously monitors markets
+- Applies screening and bot score classification
+- Detects A2 cascade signals
+- Stores results in SQLite database
+
+### 4) Adjust capital assumptions
+
+Screening is capital-aware. Edit your configuration in `src/config/settings.py`:
 
 ```python
-equity = 10_000.0
-target_pos_frac = 0.01  # 1% per position
+EQUITY: float = 10_000.0
+TARGET_POS_FRAC: float = 0.01  # 1% per position
 ```
 
 Smaller capital assumptions allow more markets to pass exit-risk constraints.
@@ -224,19 +236,35 @@ This separation ensures:
 ## Repository Structure
 
 ```
-.
-├── providers.py          # Gamma & CLOB data access
-├── screening_engine.py   # Liquidity & exit-risk screening
-├── bot_score.py          # Market regime classification
-├── a2_detector.py        # Microstructure cascade detection
-├── h1_checklist.py       # Informational strategy framework
-├── run_screening_v1.py  # Research pipeline entry point
-├── gamma_sanity.py       # Environment & API diagnostics
+polymarket_framework/
+├── src/
+│   ├── config/
+│   │   └── settings.py          # Centralized configuration
+│   ├── data/
+│   │   ├── models.py            # Domain models (MarketMeta, MarketSnapshot)
+│   │   └── clients.py           # Unified data access (Gamma & CLOB)
+│   ├── domain/
+│   │   ├── screening.py         # Liquidity & exit-risk screening
+│   │   ├── microstructure.py   # Microstructure utilities
+│   │   └── bot_score.py         # Market regime classification
+│   ├── strategies/
+│   │   ├── a2_cascade.py        # Microstructure cascade detection
+│   │   └── h1_informational.py  # Informational strategy framework
+│   ├── storage/
+│   │   └── store.py             # SQLite storage
+│   └── execution/
+│       └── adapter.py           # Execution adapter
+├── scripts/
+│   ├── research_engine.py       # Main research loop
+│   ├── screening.py             # Screening script
+│   └── diagnostics.py           # Environment & API diagnostics
+├── docs/
+│   ├── README.md
+│   ├── RESEARCH_METHODOLOGY.md
+│   └── DEPLOYMENT_GUIDE.md
+├── tests/                       # Test directory (ready for tests)
 ├── pyproject.toml
 ├── uv.lock
-├── README.md
-├── RESEARCH_METHODOLOGY.md
-├── DEPLOYMENT_GUIDE.md
 └── LICENSE
 ```
 
@@ -249,7 +277,7 @@ This usually means:
 - You are filtering `restricted=false` in a restricted jurisdiction
 - Or you are unintentionally excluding all markets
 
-**Solution:** Run `gamma_sanity.py` to confirm what Gamma returns in your environment.
+**Solution:** Run `python -m scripts.diagnostics` to confirm what Gamma returns in your environment.
 
 ### "Order book fetch fails"
 

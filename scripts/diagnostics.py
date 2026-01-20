@@ -1,6 +1,12 @@
+import sys
+from pathlib import Path
 import requests
 from collections import Counter
-from settings import SETTINGS
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config.settings import SETTINGS
 
 def fetch(params):
     r = requests.get(f"{SETTINGS.GAMMA_HOST}/markets", params=params, timeout=20)
